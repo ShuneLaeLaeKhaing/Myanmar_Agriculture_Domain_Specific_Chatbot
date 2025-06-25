@@ -1,0 +1,7 @@
+faiss_index/
+faq.json
+.env
+__pycache__/
+*.py[cod]
+myenv/
+app.log
