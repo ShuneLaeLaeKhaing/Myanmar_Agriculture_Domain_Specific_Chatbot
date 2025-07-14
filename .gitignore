@@ -5,3 +5,5 @@ __pycache__/
 *.py[cod]
 myenv/
 app.log
+feedback.json
+.gitignore
