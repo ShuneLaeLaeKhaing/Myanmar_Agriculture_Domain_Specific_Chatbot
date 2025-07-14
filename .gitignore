@@ -6,4 +6,3 @@ __pycache__/
 myenv/
 app.log
 feedback.json
-.gitignore
