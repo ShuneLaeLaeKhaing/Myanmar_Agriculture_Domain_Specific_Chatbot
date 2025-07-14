@@ -9,23 +9,10 @@ load_dotenv()
 
 class WebSearcher:
     def __init__(self):
-        # Myanmar-optimized model
         self.model = SentenceTransformer("distiluse-base-multilingual-cased-v2")
-        # Myanmar sentence endings and cleaning
         self.mm_punct = re.compile(r'([။?!])')
-        self.mm_cleaner = re.compile(r'[^\u1000-\u109F\uAA60-\uAA7F\s၊။!?]')  # Myanmar Unicode ranges
+        self.mm_cleaner = re.compile(r'[^\u1000-\u109F\uAA60-\uAA7F\s၊။!?]')  
         
-        # Agriculture domain and keyword filters
-        self.agri_domains = {
-            'moali.gov.mm',  # Myanmar Agriculture Ministry
-            'ycdc.gov.mm',   # Yangon City Development Committee
-            'fao.org/myanmar',
-            'irri.org/myanmar',
-            'greenwaymyanmar.com',
-            'awba-group.com',
-            'www.doa.gov.mm'
-        }
-
     def _is_agriculture_related(self, text: str) -> bool:
         """Check if text contains agriculture keywords or domains"""
         text_lower = text.lower()
@@ -82,18 +69,11 @@ class WebSearcher:
             if not data.get('organic_results'):
                 return "ရလဒ်မတွေ့ပါ"
 
-            # 2. Filter results to agriculture-only
             filtered_results = []
             for item in data['organic_results']:
-                link = item.get('link', '').lower()
-                snippet = item.get('snippet', '').lower()
-                title = item.get('title', '').lower()
-                
-                # Keep if from agri_domain OR contains agri_keyword
-                if (any(domain in link for domain in self.agri_domains) ):
+                if item.get('snippet'):
                     filtered_results.append(item)
 
-            # 3. Reject if no agriculture content found
             if not filtered_results:
                 return "ကျေးဇူးပြု၍ စိုက်ပျိုးရေးနှင့် သက်ဆိုင်သော မေးခွန်းများကိုသာ မေးမြန်းပါ။"
 

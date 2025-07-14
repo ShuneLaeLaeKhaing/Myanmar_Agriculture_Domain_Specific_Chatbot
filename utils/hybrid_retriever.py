@@ -17,18 +17,18 @@ import traceback
 
 @st.cache_resource
 def load_models():
-    """Cache SentenceTransformer and CrossEncoder models to avoid reloading in Streamlit"""
+    """Safely load SentenceTransformer without triggering meta tensor issues"""
     embedder = SentenceTransformer('distiluse-base-multilingual-cased-v2')
-    reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-    return embedder, reranker
+    _ = embedder.encode("test")  # force load weights into memory
+    return embedder
 
 class HybridRetriever:
     def __init__(self, faq_path: str = "faq.json", index_dir: str = "faiss_index"):
         """Myanmar Agricultural Expert System with enhanced crop and intent handling"""
         self.logger = self._setup_logger()
         self.crop_types = self._load_crop_types()
-        self.intent_types = self._load_intent_types()
         self.synonyms = self._load_agri_synonyms()
+        self.mm_stopwords = self._load_mm_stopwords()
         self.faq = self._load_faq(faq_path)
         self._init_models()
         self._init_retrieval_systems(index_dir)
@@ -65,17 +65,17 @@ class HybridRetriever:
             "ငှက်ပျော", "စပါး", "စပျစ်", "ဆပ်", "ဆီထွက်မုန်ညင်း", "ဆီအုန်း", 
             "ထောပတ်", "နဂါးမောက်", "နာနတ်", "နေကြာ", "နှမ်း", "ပန်းဂေါ်ဖီ", 
             "ပန်းနှမ်း", "ပိုးစာ", "ပီလောပီနံ", "ပဲတီစိမ်း", "ပဲပုပ်", "ပြောင်း", 
-            "မတ်ပဲ", "မာလကာ", "မြေပဲ", "မှိ", "ရုံးပတီ", "ရော်ဘာ", "လူး", 
+            "မတ်ပဲ", "မာလကာ", "မြေပဲ", "မှို", "ရုံးပတီ", "ရော်ဘာ", "လူး", 
             "လျှော်", "ဝါ", "သစ်ခွ", "အာလူး", "အုန်း", "မသတ်မှတ်ရသေးပါ"
         }
 
-    def _load_intent_types(self) -> Set[str]:
-        """Load all known intent types"""
-        return {
-            "စိုက်ပျိုးနည်း", "ပိုးမွှားကာကွယ်နည်း", "မျိုးကောင်းရွေးချယ်မှု",
-            "မျိုးသန့်", "မြေအမျိုးအစား", "ယေဘုယျမေးခွန်း", "ရိတ်သိမ်းချိန်",
-            "သက်တမ်းကြာချိန်", "အထွက်တိုးနည်း", "အရည်အသွေးမြှင့်နည်း"
-        }
+    # def _load_intent_types(self) -> Set[str]:
+    #     """Load all known intent types"""
+    #     return {
+    #         "စိုက်ပျိုးနည်း", "ပိုးမွှားကာကွယ်နည်း", "မျိုးကောင်းရွေးချယ်မှု",
+    #         "မျိုးသန့်", "မြေအမျိုးအစား", "ယေဘုယျမေးခွန်း", "ရိတ်သိမ်းချိန်",
+    #         "သက်တမ်းကြာချိန်", "အထွက်တိုးနည်း", "အရည်အသွေးမြှင့်နည်း"
+    #     }
 
     def _load_agri_synonyms(self) -> Dict[str, List[str]]:
         """Agriculture-specific Myanmar synonyms with crop and intent mappings"""
@@ -101,6 +101,13 @@ class HybridRetriever:
         
         return synonyms
 
+    def _load_mm_stopwords(self) -> Set[str]:
+        """Load Myanmar stopwords from a predefined set"""
+        return {
+            "အတွက်", "မှာ", "နည်း", "များ", "သည်", "အဘယ်", "က", "လဲ", 
+            "အနေအထား", "ဘယ်", "အကောင်းဆုံး", "ဖြစ်", "သင့်", "တစ်", 
+            "ရော", "အခြေအနေ", "အချိန်", "ဘာ", "များမှာ"
+        }
     def _load_faq(self, faq_path: str) -> List[Dict]:
         """Load and preprocess FAQ data with crop and intent metadata"""
         try:
@@ -115,9 +122,6 @@ class HybridRetriever:
                 # Validate and normalize crop type
                 item["crop_type"] = self._normalize_crop_type(item.get("crop_type", ""))
                 
-                # Validate and normalize intent
-                item["intent"] = self._normalize_intent(item.get("intent", ""))
-                
             return faq_data
         except Exception as e:
             self.logger.error(f"FAQ loading failed: {e}")
@@ -127,11 +131,6 @@ class HybridRetriever:
         """Normalize crop type to standard form"""
         crop = crop.strip()
         return crop if crop in self.crop_types else "မသတ်မှတ်ရသေးပါ"
-
-    def _normalize_intent(self, intent: str) -> str:
-        """Normalize intent to standard form"""
-        intent = intent.strip()
-        return intent if intent in self.intent_types else "ယေဘုယျမေးခွန်း"
 
     def _normalize_myanmar_text(self, text: str) -> str:
         """Advanced Myanmar text normalization"""
@@ -149,21 +148,104 @@ class HybridRetriever:
         
         return text if len(text) >= 2 else ""
 
+    def _merge_known_bigrams(self, tokens: List[str]) -> List[str]:
+        merged = []
+        i = 0
+        while i < len(tokens):
+            if i + 1 < len(tokens):
+                bigram = tokens[i] + tokens[i + 1]
+                if bigram in self.crop_types:
+                    merged.append(bigram)
+                    i += 2
+                    continue
+            merged.append(tokens[i])
+            i += 1
+        return merged
+
     def _tokenize_with_synonyms(self, text: str) -> List[str]:
-        """Tokenize Myanmar text with synonym expansion"""
-        tokens = tokenize(text, form='word')
+        """
+        Hybrid tokenization:
+        - Word segmentation via PyIDAUNGSU
+        - Adds substrings matching crops and synonyms
+        - Normalizes tokens
+        - Filters stopwords and filler words
+        """
+
+        # Step 1 — Word tokenization
+        tokens = tokenize(text, form="word")
+
+        # Step 2 — Find substrings matching crops or synonyms
+        # Sort longest terms first to avoid partial overlaps
+        all_known_terms = sorted(
+            list(self.crop_types) + list(self.synonyms.keys()),
+            key=lambda x: -len(x)
+        )
+
+        found_terms = set()
+        for term in all_known_terms:
+            if term in text:
+                found_terms.add(term)
+
+        # Combine tokens + detected terms
+        combined = tokens + list(found_terms)
+
+        # Remove stopwords
+        combined = [t for t in combined if t not in self.mm_stopwords]
+
+        # Merge bigrams if they form known crops
+        combined = self._merge_known_bigrams(combined)
+
+        # Normalize tokens
+        normalization_map = {
+            "ရေး": "မှု",
+            "အမြင်": "မြင်ကွင်း",
+            "လုပ်": "ဆောင်ရွက်",
+            "ထွက်": "ထုတ်",
+            "ထုတ်လုပ်": "ထွက်",
+            "နည်းလမ်းတွေ": "နည်းလမ်း",
+            "နည်းလမ်းများ": "နည်းလမ်း",
+            "စိုက်ပျိုးရေး": "စိုက်ပျိုး",
+            "စိုက်ပျိုးမှု": "စိုက်ပျိုး",
+            "နတ်စိုက်ပျိုး": "စိုက်ပျိုး",     # new
+            "ဘယ်နည်းလမ်း": "နည်းလမ်း",         # new
+            "နာနတ်စိုက်ပျိုး": "စိုက်ပျိုး",     # new
+            "စပါး": "စပါး",
+            "နာနတ်": "နာနတ်",
+            "မြေဩဇာ": "မြေဆီဩဇာ",
+            "မြေဆီဩဇာ": "မြေဆီဩဇာ",
+        }
+
+        filler_words = {
+            "ဖို့", "ပိုမို", "အတွက်", "ဘယ်", "တွေ", "နဲ့",
+            "သည့်", "က", "ပါ", "လဲ", "မှာ", "ဘယ်လို",
+            "ဘယ်အချိန်", "အောင်", "ရှိ", "ပါသလဲ"
+        }
+
         expanded_tokens = []
-        
-        for token in tokens:
-            expanded_tokens.append(token)
-            expanded_tokens.extend(self.synonyms.get(token, []))
-            
+        for token in combined:
+            token = token.strip()
+
+            if token in filler_words:
+                continue
+
+            # normalize token
+            normalized = normalization_map.get(token, token)
+
+            if normalized not in expanded_tokens:
+                expanded_tokens.append(normalized)
+
+            # add synonyms if defined
+            synonyms = self.synonyms.get(token, [])
+            for synonym in synonyms:
+                if synonym not in expanded_tokens:
+                    expanded_tokens.append(synonym)
+
         return expanded_tokens
 
     def _init_models(self):
         """Initialize embedding and ranking models with Streamlit caching"""
         try:
-            self.embedder, self.reranker = load_models()
+            self.embedder= load_models()
         except Exception as e:
             self.logger.error(f"Model initialization failed: {e}")
             raise
@@ -171,9 +253,7 @@ class HybridRetriever:
     def _init_retrieval_systems(self, index_dir: str):
         """Initialize BM25 and FAISS systems"""
         try:
-            # BM25 with original and cleaned questions
-            self.bm25_original = BM25Okapi([self._tokenize_with_synonyms(q["question_mm"]) for q in self.faq])
-            self.bm25_cleaned = BM25Okapi([q["tokens"] for q in self.faq])
+            self.bm25 = BM25Okapi([q["tokens"] for q in self.faq])
             
             # FAISS index
             self._init_faiss(index_dir)
@@ -191,14 +271,30 @@ class HybridRetriever:
             if index_path.exists() and meta_path.exists():
                 with open(meta_path, 'r') as f:
                     expected_dim = int(f.read())
-                
+
                 dummy_query = self.embedder.encode("test", convert_to_numpy=True)
                 if dummy_query.shape[0] == expected_dim:
-                    self.index = faiss.read_index(str(index_path))
+                    # Get cleaned questions
+                    questions = [q["cleaned_question"] for q in self.faq if q["cleaned_question"]]
+                    self.faiss_id_map = [i for i, q in enumerate(self.faq) if q["cleaned_question"]]
+
+                    # Load index
+                    index = faiss.read_index(str(index_path))
+
+                    # 🔒 Check if number of vectors matches FAQ entries
+                    if index.ntotal != len(self.faiss_id_map):
+                        self.logger.warning(
+                            f"FAISS index size mismatch: index.ntotal={index.ntotal}, faiss_id_map={len(self.faiss_id_map)}"
+                        )
+                        raise ValueError("FAISS index is outdated — number of entries does not match.")
+
+                    self.index = index
+                    self.logger.info("✅ FAISS index loaded successfully")
                     return
-                
+
+            # If any condition fails → rebuild
             self._rebuild_faiss_index(index_dir)
-            
+
         except Exception as e:
             self.logger.warning(f"FAISS load failed: {e}")
             self._rebuild_faiss_index(index_dir)
@@ -210,7 +306,9 @@ class HybridRetriever:
         meta_path = Path(index_dir) / "index.meta"
 
         questions = [q["cleaned_question"] for q in self.faq if q["cleaned_question"]]
+        self.faiss_id_map = [i for i, q in enumerate(self.faq) if q["cleaned_question"]]
         embeddings = self.embedder.encode(questions, show_progress_bar=True).astype('float32')
+
         faiss.normalize_L2(embeddings)
 
         index = faiss.IndexFlatIP(embeddings.shape[1])
@@ -243,90 +341,144 @@ class HybridRetriever:
             
             # 3. Extract potential crop and intent from query
             detected_crop = self._detect_crop_from_query(query_tokens)
-            detected_intent = self._detect_intent_from_query(query_tokens)
-            
-            # Use provided filters or detected values
-            crop_filter = crop_filter or detected_crop
-            intent_filter = intent_filter or detected_intent
-            
-            # 4. BM25 search (lexical)
-            bm25_all_scores = self.bm25_cleaned.get_scores(query_tokens)
-            bm25_indices = np.argsort(bm25_all_scores)[-5:][::-1]
-            bm25_scores = bm25_all_scores[bm25_indices]
-            bm25_scores = bm25_scores / (bm25_scores.max() or 1)  # Normalize to 0-1
 
-            self._log_search_results("BM25", bm25_indices.tolist(), bm25_scores.tolist(), query)
+            # 🚩 Flag whether the query itself mentions a crop
+            is_crop_from_query = bool(detected_crop)
+
+            if detected_crop:
+                crop_filter = self._normalize_crop_type(detected_crop)
+
+
+            self.logger.debug(f"🌾 Using crop filter: {crop_filter}")
+
+            # --- Init empty first to avoid unbound error
+            filtered_faq = []
+            filtered_corpus = []
+
+            # ✅ If no crop or intent filter, use all FAQs
+            if not crop_filter and not intent_filter:
+                filtered_faq = list(enumerate(self.faq))
+                filtered_corpus = [q["tokens"] for q in self.faq]
+            else:
+                for i, q in enumerate(self.faq):
+                    crop_ok = not crop_filter or q["crop_type"] == crop_filter
+                    # intent_ok = not intent_filter or q["intent"] == intent_filter
+                    if crop_ok:
+                        filtered_faq.append((i, q))
+                        filtered_corpus.append(q["tokens"])
+
+            # Rebuild BM25 on this filtered corpus
+            bm25_filtered = BM25Okapi(filtered_corpus)
+            bm25_scores_all = bm25_filtered.get_scores(query_tokens)
+
+            # Rank top k (but map back to original FAQ indices)
+            top_k_bm25 = np.argsort(bm25_scores_all)[-5:][::-1]
+            bm25_indices = [filtered_faq[i][0] for i in top_k_bm25]  # Original indices
+            bm25_scores = bm25_scores_all[top_k_bm25]
+            bm25_scores = bm25_scores
+
+            self.logger.debug(f"Query Tokens: {query_tokens}")
+            self.logger.debug(f"Top Match Tokens: {self.faq[bm25_indices[0]]['tokens']}")
+
+
+            if len(bm25_indices) > 0:
+                top_idx = bm25_indices[0]
+                faq_item = self.faq[top_idx]
+
+                query_tokens_set = set(query_tokens)
+                faq_tokens_set = set(faq_item["tokens"])
+                overlap = len(query_tokens_set & faq_tokens_set)
+
+                crop_match = (faq_item["crop_type"] == crop_filter) if crop_filter else True
+
+                raw_bm25_score = bm25_scores.max() if len(bm25_scores) > 0 else 0
+
+                # ✅ Dynamically detect important tokens
+                important_tokens = set(
+                    t for t in query_tokens
+                    if t not in self.crop_types
+                    and t not in self.mm_stopwords
+                    and len(t) > 1
+                )
+
+                # Check if all important tokens exist in the FAQ tokens
+                is_important_present = all(token in faq_tokens_set for token in important_tokens)
+
+                is_relevant = (
+                    overlap >= 2 and
+                    raw_bm25_score >= 5.0 and
+                    crop_match and
+                    (is_important_present or len(important_tokens) == 0)
+                )
+
+                if is_relevant:
+                    bm25_scores = bm25_scores / (raw_bm25_score or 1)
+                else:
+                    scaling_factor = 0.3 / (raw_bm25_score or 1)
+                    bm25_scores = bm25_scores * scaling_factor
+
+                bm25_scores = np.clip(bm25_scores, 0, 1)
+
+            self._log_search_results("BM25", bm25_indices, bm25_scores, query)
 
             # 5. FAISS search (semantic)
             query_embed = self.embedder.encode(cleaned_query, convert_to_numpy=True)
             query_embed = query_embed.astype('float32')
             faiss.normalize_L2(query_embed.reshape(1, -1))
-            faiss_scores, faiss_indices = self.index.search(query_embed.reshape(1, -1), 5)
-            faiss_scores = (faiss_scores[0] + 1) / 2  # Normalize to 0–1
+            faiss_scores_raw, faiss_indices_raw = self.index.search(query_embed.reshape(1, -1), 5)
+            faiss_scores = (faiss_scores_raw[0] + 1) / 2  # Normalize
+            faiss_indices = [self.faiss_id_map[i] for i in faiss_indices_raw[0]]
 
-            faiss_indices = faiss_indices[0]
-            self._log_search_results("FAISS", faiss_indices.tolist(), faiss_scores.tolist(), query)
+            self._log_search_results("FAISS", faiss_indices, faiss_scores, query)
             
-            # 6. Hybrid ranking
             results = self._hybrid_ranking(
-            bm25_indices, bm25_scores,
+            bm25_indices, bm25_scores.tolist(),
             faiss_indices, faiss_scores,
-            query,  # pass original query for logging
-            crop_filter,
-            intent_filter
+            query, crop_filter, intent_filter,
+            threshold=0.6
         )
-        
 
-            # 7. Re-rank top candidates
+            # 7. Use best hybrid score directly
             if results:
-                best_match = self._rerank_results(query, results[:top_k*2])
-                
-                if best_match:
-                    self.logger.info(f"Tokenized query: {' | '.join(query_tokens)}")
-                    self.logger.info(f"Selected FAQ: {best_match['question_mm']} → {best_match['answer_mm']}")
-                    return best_match["answer_mm"]
+                best_match = results[0]["item"]  # Highest hybrid score
+                self.logger.info(f"Tokenized query: {' | '.join(query_tokens)}")
+                self.logger.info(f"Selected FAQ: {best_match['question_mm']} → {best_match['answer_mm']}")
+                return best_match["answer_mm"]
 
-            return None
             
         except Exception as e:
             self.logger.error(f"Search error: {str(e)}")
             self.logger.error(traceback.format_exc())
             return "An error occurred while processing your query. Please try again."
 
-    def _log_search_results(self, stage: str, results: List[int], scores: List[float], query: str):
-        """Log the matched FAQ ID and question for given search stage (BM25/FAISS)"""
+    def _log_search_results(self, stage: str, indices: list, scores: list, query: str):
         log_lines = [
             f"🔍 {stage} Search Results for: '{query}'",
             "Rank | FAQ ID | Score | Question"
         ]
         
-        for rank, (idx, score) in enumerate(zip(results[:5], scores[:5]), 1):
+        for rank, (idx, score) in enumerate(zip(indices[:5], scores[:5]), 1):
             faq_item = self.faq[idx]
-            faq_id = faq_item.get("id", idx)  # fallback to index if no explicit ID
-            question = faq_item["question_mm"][:60].replace("\n", " ")
+            faq_id = faq_item.get("id", idx)
+            question = faq_item["question_mm"].replace("\n", " ")
             log_lines.append(f"{rank:4} | {faq_id} | {score:.4f} | {question}")
         
         self.logger.info("\n".join(log_lines))
 
     def _detect_crop_from_query(self, tokens: List[str]) -> Optional[str]:
-        """Detect crop type from query tokens"""
         for token in tokens:
-            if token in self.crop_types:
-                return token
-        return None
-
-    def _detect_intent_from_query(self, tokens: List[str]) -> Optional[str]:
-        """Detect intent from query tokens"""
-        intent_keywords = {
-            "စိုက်ပျိုးနည်း": ["စိုက်နည်း", "ပျိုးနည်း", "လုပ်နည်း"],
-            "ပိုးမွှားကာကွယ်နည်း": ["ပိုး", "ကာကွယ်", "ပိုးသတ်"],
-            "အထွက်တိုးနည်း": ["အထွက်", "တိုး", "များ"]
-        }
-        
-        for intent, keywords in intent_keywords.items():
-            if any(keyword in tokens for keyword in keywords):
-                return intent
-                
+            for crop in self.crop_types:
+                if token == crop:
+                    self.logger.debug(f"🌾 Detected crop (exact match): {crop}")
+                    return crop
+                # additionally check start or end
+                if token.startswith(crop) and len(token) > len(crop):
+                    self.logger.debug(f"🌾 Detected crop (startswith): {crop} in token: {token}")
+                    return crop
+                if token.endswith(crop) and len(token) > len(crop):
+                    self.logger.debug(f"🌾 Detected crop (endswith): {crop} in token: {token}")
+                    return crop
+        self.logger.debug(f"❌ No crop detected from tokens: {tokens}")
         return None
 
     def _find_exact_match(self, query: str) -> Optional[Dict]:
@@ -337,49 +489,74 @@ class HybridRetriever:
                 return item
         return None
 
-    def _hybrid_ranking(self, bm25_indices, bm25_scores, 
-                  faiss_indices, faiss_scores, 
-                  query: str, 
-                  crop_filter: Optional[str],
-                  intent_filter: Optional[str]) -> List[Dict]:
-        """Combine results with proper filtering BEFORE scoring"""
-        
-        # 1. Apply filters FIRST to BM25 candidates
-        filtered_bm25 = []
-        for idx, score in zip(bm25_indices, bm25_scores):
-            item = self.faq[idx]
-            
-            # Skip if crop filter exists and doesn't match
-            if crop_filter and item["crop_type"] != crop_filter:
-                continue
-                
-            # Skip if intent filter exists and doesn't match
-            if intent_filter and item["intent"] != intent_filter:
-                continue
-                
-            filtered_bm25.append((idx, score))
-        
-        # 2. Get top 5 FILTERED BM25 results
-        top_bm25 = sorted(filtered_bm25, key=lambda x: x[1], reverse=True)[:5]
-        bm25_dict = {idx: score for idx, score in top_bm25}
-        
-        # 3. Get top 5 FAISS results (no filtering yet)
-        top_faiss = list(zip(faiss_indices, faiss_scores))[:5]
-        faiss_dict = {idx: score for idx, score in top_faiss}
-        
-        # 4. Hybrid fusion only for items that:
-        #    - Passed BM25 filters AND
-        #    - Are in top 5 of both methods
+    def _hybrid_ranking(
+                        self,
+                        bm25_indices,
+                        bm25_scores,
+                        faiss_indices,
+                        faiss_scores,
+                        query: str,
+                        crop_filter: Optional[str],
+                        intent_filter: Optional[str],
+                        threshold: float = 0.6
+                    ) -> List[Dict]:
+        """Improved hybrid fusion assuming BM25 is already filtered,
+        and applies a confidence threshold to the final scores.
+        """
+
+        bm25_dict = {idx: score for idx, score in zip(bm25_indices, bm25_scores)}
+        faiss_dict = {idx: score for idx, score in zip(faiss_indices, faiss_scores)}
+
+        all_indices = set(bm25_dict.keys()).union(set(faiss_dict.keys()))
+
         fused = []
-        for idx in set(bm25_dict.keys()) & set(faiss_dict.keys()):
-            combined_score = (bm25_dict[idx] * 0.6) + (faiss_dict[idx] * 0.4)
+        for idx in all_indices:
+            item = self.faq[idx]
+
+            if idx in faiss_dict:
+                if crop_filter and item["crop_type"] != crop_filter:
+                    self.logger.debug(f"❌ Skipping FAISS item {idx} due to crop mismatch: {item['crop_type']} ≠ {crop_filter}")
+                    continue
+
+            bm25_score = bm25_dict.get(idx, 0)
+            faiss_score = faiss_dict.get(idx, 0)
+            hybrid_score = (0.4* bm25_score) + (0.6 * faiss_score)
+
             fused.append({
                 "index": idx,
-                "score": combined_score,
-                "item": self.faq[idx]
+                "score": hybrid_score,
+                "item": item
             })
-        
-        return sorted(fused, key=lambda x: x["score"], reverse=True)
+
+        fused_sorted = sorted(fused, key=lambda x: x["score"], reverse=True)
+
+        # ✅ Apply threshold filtering
+        filtered = [entry for entry in fused_sorted if entry["score"] >= threshold]
+
+        if not filtered:
+            self.logger.info(f"⚠️ No hybrid result above threshold ({threshold}) → fallback triggered.")
+            return []
+
+        # Logging only the filtered results
+        top = filtered[0]
+        self.logger.info(f"✅ Final Selected FAQ ID: {top['item'].get('id')} → {top['item']['question_mm']}")
+        self.logger.info("📢 Reached hybrid fusion logging block.")
+
+        log_lines = [
+            f"🤝 Hybrid Fusion Results for: '{query}'",
+            f"Hybrid threshold set to: {threshold}",
+            "Rank | FAQ ID | Hybrid Score | Question"
+        ]
+        for rank, entry in enumerate(filtered[:10], 1):
+            item = entry["item"]
+            faq_id = item.get("id", entry["index"])
+            score = entry["score"]
+            question = item["question_mm"].replace("\n", " ")
+            log_lines.append(f"{rank:4} | {faq_id} | {score:.4f} | {question}")
+
+        self.logger.info("\n".join(log_lines))
+
+        return filtered
 
     def _is_relevant_match(self, idx: int, query: str) -> bool:
         """Validate match relevance with enhanced checks"""
@@ -397,23 +574,3 @@ class HybridRetriever:
         overlap = len(query_words & item_words)
         min_overlap = 1 if query_len <= 3 else 2
         return overlap >= min_overlap
-
-    def _rerank_results(self, query: str, candidates: List[Dict]) -> Dict:
-        """Re-rank top candidates with cross-encoder"""
-        if not candidates or not query:
-            return None
-        if len(candidates) == 1:
-            return candidates[0]["item"]
-            
-        # Prepare pairs for cross-encoder
-        pairs = [(query, c["item"]["cleaned_question"]) for c in candidates]
-        
-        # Get cross-encoder scores
-        ce_scores = self.reranker.predict(pairs)
-        
-        # Combine scores with original scores
-        for i, score in enumerate(ce_scores):
-            candidates[i]["score"] = (candidates[i]["score"] * 0.6) + (score * 0.4)
-            
-        # Return best match
-        return max(candidates, key=lambda x: x["score"])["item"]

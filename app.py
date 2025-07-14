@@ -52,7 +52,8 @@ if query := st.chat_input("မေးခွန်းမေးပါ..."):
             output = f"""
             🌐 **Web အဖြေ**
             {response['response']}
-            """
+            """    
+
         elif response["source"] == "Out of scope":
             output = f"❌ {response['response']}"
             
