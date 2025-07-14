@@ -9,10 +9,3 @@ pip install pyidaungsu --no-deps
 pip install numpy pybind11
 pip install fasttext-wheel  # Pre-built wheel
 
-
-what is the most popular actress in myanmr(translate to myanmar)
-မြန်မာနိုင်ငံမှာ အကျော်ကြားဆုံး မင်းသမီးက ဘယ်သူလဲ
-
-မတ်ပဲ နဲ့ ပဲကြီး ဈေးနှုန်း
-
-ရာသီဥတုပြောင်းလဲမှုက စိုက်ပျိုးရေးအပေါ်ဘယ်လိုသက်ရောက်မှုရှိပါသလဲ။
